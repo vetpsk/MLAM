@@ -1,0 +1,97 @@
+---
+title: 'Machine learning: Application in Medicine, Exercise 1.2'
+output:
+  pdf_document: default
+  html_notebook: default
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
+#1. SVM on the ADI_R items of the Genetic Syndorme Autism data
+We have seen in the previous Exercise that the contrast between Genetic groups 1 and 5 based on the first two Principle Components, did not achieve a very low error, using Logistic Regression or kNN
+Here we will use the original 34 Items form the ADI-R questionnaire to classify this contrast, using SVM
+
+```{r}
+
+# This first part is equal to Exercise 1.1.
+# Read the dataset Autism.csv.
+
+dat <- read.csv("Autism.csv")
+
+# select 322 verbal subjects:
+dat <- dat[dat$verbal=="verbal",]
+head(dat)
+```
+```{r}
+# make separate object for ADI-R items
+Items <- dat[,-(1:3)]
+# and version of the data with only Items and the genetic group variable
+dat1 <- dat[,-(1:2)]
+# restrict the data to two groups: 1 and 5, use a logical selection vector
+select15 <- dat1$Genetic_Syndrome %in% levels(dat1$Genetic_Syndrome)[c(1,5)]
+table(dat[select15,]$Genetic_Syndrome)
+```
+We will use the package caret, which contains the function train, to train classifiers. There are several variants of svm available in caret
+```{r}
+
+library(caret)
+# if needed, install the boot package:
+# install.packages("caret")
+# Fit SVM with linear kernel, default Cost parameter
+# first define a traincontrol object, that set the method for crossvalidation, and the output, including predicted probabilities
+ctrl <- trainControl(method = "LOOCV", savePred=T,classProbs=TRUE)
+svm.fit <- train(x=Items[select15,],
+               y=factor(dat[select15,]$Genetic_Syndrome,labels=c("group1","group5")),
+                 method="svmLinear",
+                 preProcess="scale",
+                 trControl = ctrl)
+names(svm.fit)
+svm.fit$results
+svm.fit$bestTune
+```
+The Cost parameter C was set to a default value of 1. In data that are not completely separated, the cost parameters should be optimised by tuning. The train function can do this by means of cross validation
+```{r}
+# Fit SVM with linear kernel, tune Cost parameter
+ctrl <- trainControl(method = "LOOCV", savePred=T, classProbs = T)
+svm.fit.tuned <- train(x=Items[select15,],
+              y=factor(dat[select15,]$Genetic_Syndrome,labels=c("group1","group5")),
+                    method="svmLinear",
+                    preProcess="scale",
+                    trControl = ctrl, tuneGrid = data.frame(C=c(0.1,0.2,0.3,0.4,0.5,0.6,0.8,1) ) )
+svm.fit.tuned$results
+svm.fit.tuned$bestTune
+plot(svm.fit.tuned$results[,1],svm.fit.tuned$results[,2],type='l')
+```
+We see that a higher accuracy is obtained by optimising the Cost paramater.
+
+Q1:  try to improve further on the accuracy, by changing the linear kernel into a radial kernel ("svmRadial")
+```{r}
+cRange <- c(1,2,5,10)
+sigmaRange <- c(0.05,0.01,0.02)
+svm.fit.tuned2 <- train(x=Items[select15,],y=factor(dat[select15,]$Genetic_Syndrome),method="svmRadial",preProcess="scale",trControl = ctrl,tuneGrid=expand.grid(C=cRange,sigma=sigmaRange) )
+svm.fit.tuned2$results
+matrix(svm.fit.tuned2$results$Accuracy,nrow=length(cRange))
+```
+We see that an even higher accuracy is obtained by specifc combinations of sigma, and C.
+
+Q2: # Find the predicted probabilities for belonging to group 5 from SVM with linear kernel, with the optimal Cost parameter.
+```{r}
+predicted.prob.grp5 <- svm.fit.tuned$pred[svm.fit.tuned$pred[,"C"]==as.numeric(svm.fit.tuned$bestTune),
+                   "group5"]
+hist(predicted.prob.grp5)
+```
+
+Calibration plot
+```{r}
+require(rms)
+val.prob(predicted.prob.grp5,
+         as.numeric(factor(dat[select15,]$Genetic_Syndrome))-1)
+```
