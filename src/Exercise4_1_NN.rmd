@@ -1,0 +1,133 @@
+---
+title: "Machine learning: Application in Medicine  Exercise 4.1"
+output: html_notebook
+---
+
+# 1. Logistic regression: probabilistic versus hard classification
+We have already seen that some classification methods also can produce probality estimates.
+This was shown yesterday, using ROC curves instead of accuracy/error to evaluate the classifier.
+The aspect of calibration becomes important, next to disccrimination as measured by the ROC curve.
+
+In this exercise you will use Logistic regression on the heart data to illustrate calibration. The code is given, as a demo.
+In addition, we look at the effect of using different loss functions to fit the model, related to the aspect of Hard or probabilistic classiication, illustrated on the same data by Lasso and Ridge. You have to code this yourself.
+
+```{r}
+library(rms)
+# We will use the saved heart.comp.csv data. (Recall Ex2.4.2. on Day 2, Missing entries were removed.)
+heart <- read.csv("./Data_Day2and3/heart_comp.csv", sep=",", header=T)
+
+# Split the data in training and test set, using these row-indicators for the training set
+set.seed(5671)   # use set.seed to get the same results, each time you run the code
+train_rows=sample(1:nrow(heart), 153) 
+```
+
+First we fit a full logistic model to the training data
+```{r}
+heart.fit=glm(AHD~.,data=heart[train_rows,], family="binomial")
+heart.fit
+```
+
+Estimate the out-of-sample error by LOOCV and 10-fold CV, and by the error in the test-set.
+To compute the error, use the same cost function that was used before (e.g. on Day 1)
+```{r}
+library(boot)
+cost <- function(r, pi = 0) mean(abs(r-pi) > 0.5)
+## LOOCV for estimating out-of-sample error in the training data
+cv.err <- cv.glm(heart[train_rows,],heart.fit, cost, K = nrow(heart[train_rows,]))$delta
+## 10-fol CV for estimating out-of-sample error in the training data
+cv.10.err <- cv.glm(heart[train_rows,],heart.fit, cost, K = 10)$delta
+## in-sample error in the training data
+train.error <- cost(heart[train_rows,]$AHD=="Yes",predict(heart.fit,newdata=heart[train_rows,],type="response")>0.5)
+## out-of-sample error in the test data
+test.error <- cost(heart[-train_rows,]$AHD=="Yes",predict(heart.fit,newdata=heart[-train_rows,],type="response")>0.5)
+## collect all results into one vector:
+c(cv.err=cv.err[2],cv.10.err=cv.10.err[2],test.error=test.error,train.error=train.error)
+```
+
+Calibration plot on the test data.
+```{r}
+pred.test <- predict(heart.fit,newdata=heart[-train_rows,],type="response")
+
+# calibration plot, through the function val.prob from the rms package
+heart$AHD <- factor(as.character(heart$AHD))
+levels(heart$AHD) <- list("No" = 0, "Yes" = 1)
+v <- val.prob(p=pred.test,y=heart[-train_rows,]$AHD=="Yes")
+```
+ROC curve on the test data.
+```{r}
+# use the package ROCR to compute the data for the ROC curve
+library(ROCR)
+heart.pred = prediction(pred.test,heart[-train_rows,]$AHD)
+heart.perf = performance(heart.pred,"tpr","fpr")
+#compute area under ROC curve
+auc <- performance(heart.pred,"auc")
+auc <- unlist(slot(auc, "y.values"))
+
+plot(heart.perf, main="ROC Curve on test data",col=2,lwd=2)
+text(x=.8,y=.2,labels=paste("AUC: ",format(auc,digits=3)))
+abline(a=0,b=1,lwd=2,lty=2,col="gray")
+```
+Q: And what about the test error? Is this expected behaviour?
+Q: What do you conclude about the calibration?
+Redo this exercise with a different randomly chosen training sample and test sample (change the Seed)
+
+# 2. Lasso and Ridge: different loss functions lead to different models
+
+First, the data are converted in a X matrix and y vector, for use with glmnet
+```{r}
+library(glmnet)
+
+# Split data into train and test sets. For glmnet, we need a X-matrix
+X.train <- model.matrix(AHD~.,data=heart[train_rows,])[,-1]
+X.test  <- model.matrix(AHD~.,data=heart[-train_rows,])[,-1]
+
+y.train <- heart[train_rows,"AHD" ]=="Yes"
+y.test <- heart[-train_rows,"AHD" ]=="Yes"
+c(nrow(X.train),length(y.train),nrow(X.test),length(y.test))
+table(y.train)
+table(y.test)
+```
+
+Fit Lasso and Ridge, using the default type.measure="deviance", which can be specified in cv.glmnet.
+
+Fill in the code yourself, using the exercises of Day 2.
+
+Hint: use family="binomial" in the glmnet and cv.glmnet function to do penalized logistic regression
+```{r}
+# fit Lasso and Ridge 
+fit.lasso <- glmnet(X.train, y.train, family = "binomial", alpha = 1)
+fit.ridge <- glmnet(X.train, y.train, family = "binomial", alpha = 0)
+
+# 10-fold Cross validation for a range of lambda values, to find the optimal value
+fit.lasso.cv.dev <- cv.glmnet(X.train, y.train, family = "binomial", alpha = 1, type.measure = "deviance", nfolds = 10)
+fit.ridge.cv.dev <- cv.glmnet(X.train, y.train, family = "binomial", alpha = 0, type.measure = "deviance", nfolds = 10)
+
+fit.lasso.cv.dev2 <- cv.glmnet(X.train, y.train, family = "binomial", alpha = 1, type.measure = "class", nfolds = 10)
+fit.ridge.cv.dev2 <- cv.glmnet(X.train, y.train, family = "binomial", alpha = 0, type.measure = "class", nfolds = 10)
+
+#Plot solution path and cross-validated error as function of lambda
+par(mfrow=c(2,2))
+plot(fit.lasso, xvar="lambda")
+plot(fit.lasso.cv.dev, main="Lasso")
+plot(fit.ridge, xvar="lambda")
+plot(fit.ridge.cv.dev, main="Ridge")
+
+par(mfrow=c(2,2))
+plot(fit.lasso, xvar="lambda")
+plot(fit.lasso.cv.dev2, main="Lasso")
+plot(fit.ridge, xvar="lambda")
+plot(fit.ridge.cv.dev2, main="Ridge")
+
+```
+
+```{r}
+# optimal lambda for Lasso and Ridge
+fit.lasso.cv.dev$lambda.1se
+fit.ridge.cv.dev$lambda.1se
+
+fit.lasso.cv.dev2$lambda.1se
+fit.ridge.cv.dev2$lambda.1se
+```
+
+Q: Now fit Lasso and Ridge, using type.measure="class", for hard classification, which can be specified in cv.glmnet.
+Modify your code above.
