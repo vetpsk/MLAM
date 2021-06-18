@@ -1,0 +1,244 @@
+---
+title: "Case Study_MLAM group 7"
+author: "P Kulkarni"
+date: "6/17/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = F, message = F)
+```
+
+## Read data
+
+```{r}
+traindata <- readRDS("heart1case.RDS")
+traindata <- traindata[complete.cases(traindata),]
+testdata <- readRDS("heart2test.RDS")
+str(traindata)
+```
+## Descriptives
+
+```{r}
+library(skimr)
+library(dplyr)
+
+traindata %>% skim_without_charts() %>% partition()
+table(traindata$hd)
+```
+
+## simple models
+
+```{r}
+set.seed(123)
+train=sample(1:nrow(traindata), round(0.8*nrow(traindata))) 
+test.all=traindata[-train,]
+train.all <- traindata[train,]
+
+```
+## Penalized regression
+
+
+```{r}
+library(glmnet)
+
+X.train <- as.matrix(train.all[,-14])
+y.train <- train.all[,14]
+fit.lasso <- glmnet(X.train, y.train, family = "binomial", alpha = 1)
+fit.ridge <- glmnet(X.train, y.train, family = "binomial", alpha = 0)
+fit.elnet <- glmnet(X.train, y.train, family = "binomial", alpha = 0.5)
+par(mfrow = c(1,3))
+plot(fit.lasso, xvar="lambda", main="LASSO")
+
+plot(fit.ridge, xvar="lambda", main="Ridge")
+
+plot(fit.elnet, xvar="lambda",main="Elastic Net")
+
+```
+
+## Tuning and CV
+
+#### CV of Penalized regression part 1; ridge and lasso
+
+```{r}
+fit.lasso.cv <- cv.glmnet(as(X.train, "dgCMatrix"), as.vector(y.train), family = "binomial", alpha = 1, type.measure = "class", nfolds = 5)
+fit.ridge.cv <- cv.glmnet(as(X.train, "dgCMatrix"), as.vector(y.train), family = "binomial", alpha = 0, type.measure = "class", nfolds = 5)
+par(mfrow=c(2,1))
+plot(fit.lasso.cv, main="Lasso")
+plot(fit.ridge.cv, main="Ridge")
+
+fit.lasso.cv$lambda.1se
+fit.ridge.cv$lambda.1se
+
+cat("refit ridge and lasso")
+fit.lasso <- glmnet(X.train, y.train, family = "binomial", alpha = 1, lambda = 0.0756)
+fit.ridge <- glmnet(X.train, y.train, family = "binomial", alpha = 0, lambda = 1.1493)
+```
+
+#### CV Penalized regression part 2; ElasticNet
+
+```{r}
+library(caret)
+set.seed(123)
+enet.cv = trainControl(method = "cv", number = 5)
+fit.enet1 = train(
+  hd ~ ., data = train.all,
+  method = "glmnet",
+  trControl = enet.cv,
+  tuneLength = 10
+)
+plot(fit.enet1)
+
+get_best_result = function(caret_fit) {
+  best = which(rownames(caret_fit$results) == rownames(caret_fit$bestTune))
+  best_result = caret_fit$results[best, ]
+  rownames(best_result) = NULL
+  best_result
+}
+
+get_best_result(fit.enet1)
+cat("refit enet")
+fit.elnet <- glmnet(X.train, y.train, family = "binomial", alpha = 0.3, lambda = 0.2676)
+```
+
+## Predict on small test set (test.all)
+
+```{r}
+calc_acc = function(actual, predicted) {
+  mean(actual == predicted)
+}
+
+X.test.all <- as(as.matrix(test.all[,-14]), "dgCMatrix")
+Y.test.all <- as.vector(test.all[,14])
+acc.ridge <- calc_acc(actual = test.all$hd,
+                 predicted = predict(fit.ridge.cv, newx = X.test.all, type = "class"))
+print(acc.ridge)
+
+acc.lasso <- calc_acc(actual = test.all$hd,
+                 predicted = predict(fit.lasso.cv, newx = X.test.all, type = "class"))
+print(acc.lasso)
+
+acc.enet <- calc_acc(actual = test.all$hd,
+                   predicted = predict(fit.elnet, newx = X.test.all, type = "class"))
+print(acc.enet)
+
+acc.enet2 <- calc_acc(actual = test.all$hd,
+                   predicted = predict(fit.enet1, newdata = test.all))
+print(acc.enet2)
+
+```
+
+## ROC and other stats
+
+```{r}
+pred.ridge <- predict(fit.ridge, newx = X.test.all, type = "response")
+pred.lasso <- predict(fit.lasso, newx = X.test.all, type = "response")
+pred.enet1 <- predict(fit.elnet, newx = X.test.all, type = "response")
+pred.enet2 <- predict(fit.enet1, newdata = test.all, type = "prob")
+
+library(ROCR)
+ROC.pred.ridge = prediction(pred.ridge,test.all$hd)
+ROC.perf.ridge = performance(ROC.pred.ridge,"tpr","fpr")
+#compute area under ROC curve
+auc <- performance(ROC.pred.ridge,"auc")
+auc <- unlist(slot(auc, "y.values"))
+
+plot(ROC.perf.ridge, main="ROC Curve of ridge reg on small test data",col=2,lwd=2)
+text(x=.8,y=.2,labels=paste("AUC: ",format(auc,digits=3)))
+abline(a=0,b=1,lwd=2,lty=2,col="gray")
+
+ROC.pred.lasso = prediction(pred.lasso,test.all$hd)
+ROC.perf.lasso = performance(ROC.pred.lasso,"tpr","fpr")
+#compute area under ROC curve
+auc <- performance(ROC.pred.lasso,"auc")
+auc <- unlist(slot(auc, "y.values"))
+
+plot(ROC.perf.lasso, main="ROC Curve of lasso reg on small test data",col=2,lwd=2)
+text(x=.8,y=.2,labels=paste("AUC: ",format(auc,digits=3)))
+abline(a=0,b=1,lwd=2,lty=2,col="gray")
+
+ROC.pred.enet1 = prediction(pred.enet1,test.all$hd)
+ROC.perf.enet1 = performance(ROC.pred.enet1,"tpr","fpr")
+#compute area under ROC curve
+auc <- performance(ROC.pred.enet1,"auc")
+auc <- unlist(slot(auc, "y.values"))
+
+plot(ROC.perf.enet1, main="ROC Curve of enet1 reg on small test data",col=2,lwd=2)
+text(x=.8,y=.2,labels=paste("AUC: ",format(auc,digits=3)))
+abline(a=0,b=1,lwd=2,lty=2,col="gray")
+
+ROC.pred.enet2 = prediction(pred.enet2$`1`,test.all$hd)
+ROC.perf.enet2 = performance(ROC.pred.enet2,"tpr","fpr")
+#compute area under ROC curve
+auc <- performance(ROC.pred.enet2,"auc")
+auc <- unlist(slot(auc, "y.values"))
+
+plot(ROC.perf.enet2, main="ROC Curve of enet2 reg on small test data",col=2,lwd=2)
+text(x=.8,y=.2,labels=paste("AUC: ",format(auc,digits=3)))
+abline(a=0,b=1,lwd=2,lty=2,col="gray")
+```
+
+## Full training data models
+Running all the above models with full training data aka "heart1case.RDS"
+
+```{r}
+X.train <- as.matrix(traindata[,-14])
+y.train <- traindata[,14]
+fit.lasso.full <- glmnet(X.train, y.train, family = "binomial", alpha = 1)
+fit.ridge.full <- glmnet(X.train, y.train, family = "binomial", alpha = 0)
+
+fit.lasso.cv.full <- cv.glmnet(as(X.train, "dgCMatrix"), as.vector(y.train), family = "binomial", alpha = 1, type.measure = "class", nfolds = 5)
+fit.ridge.cv.full <- cv.glmnet(as(X.train, "dgCMatrix"), as.vector(y.train), family = "binomial", alpha = 0, type.measure = "class", nfolds = 5)
+
+plot(fit.lasso.cv, main="Lasso")
+plot(fit.ridge.cv, main="Ridge")
+
+fit.lasso.cv$lambda.1se
+fit.ridge.cv$lambda.1se
+
+fit.enet.full = train(
+  hd ~ ., data = traindata,
+  method = "glmnet",
+  trControl = enet.cv,
+  tuneLength = 10
+)
+
+
+get_best_result = function(caret_fit) {
+  best = which(rownames(caret_fit$results) == rownames(caret_fit$bestTune))
+  best_result = caret_fit$results[best, ]
+  rownames(best_result) = NULL
+  best_result
+}
+plot(fit.enet.full)
+get_best_result(fit.enet.full)
+
+fit.enet.full <- glmnet(X.train, y.train, family = "binomial", alpha = 0.2, lambda = 0.267)
+fit.enet.full
+```
+
+## Predictions on test saved
+
+```{r}
+fit.lasso.full <- glmnet(X.train, y.train, family = "binomial", alpha = 1, lambda = 0.231)
+fit.ridge.full <- glmnet(X.train, y.train, family = "binomial", alpha = 0, lambda = 0.722)
+
+
+X.testdata <- as(as.matrix(testdata), "dgCMatrix")
+
+resp.ridge.testdata <- predict(fit.ridge.full, newx = X.testdata, type = "response")
+resp.lasso.testdata <- predict(fit.lasso.full, newx = X.testdata, type = "response")
+pred.ridge.testdata <- predict(fit.ridge.full, newx = X.testdata, type = "class")
+pred.lasso.testdata <- predict(fit.lasso.full, newx = X.testdata, type = "class")
+resp.enet.testdata <- predict(fit.enet.full, newx = X.testdata, type = "response")
+pred.enet.testdata <- predict(fit.enet.full, newx = X.testdata, type = "class")
+
+predict.ridge <- data.frame(cbind(resp.ridge.testdata, pred.ridge.testdata))
+predict.lasso <- data.frame(cbind(resp.lasso.testdata, pred.lasso.testdata))
+predict.enet <- data.frame(cbind(resp.enet.testdata, pred.enet.testdata))
+
+pred.testdata <- cbind(predict.ridge, predict.lasso, predict.enet)
+colnames(pred.testdata) <- c("ridge.resp", "ridge.hd", "lasso.resp", "lasso.hd", "enet.resp", "enet.hd")
+as.data.frame(xtabs(~pred.testdata$ridge.hd + pred.testdata$lasso.hd + pred.testdata$enet.hd))
+```
+
